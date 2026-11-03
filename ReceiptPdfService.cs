@@ -26,7 +26,7 @@ public sealed class ReceiptPdfService(IOptions<OrganizationOptions> organization
             content.AppendLine("q 250 0 0 116 48 710 cm /Im1 Do Q");
         else
             Text(48, 790, 16, _organization.Name, true);
-        Text(48, 688, 13, "PAYMENT RECEIPT", true);
+        Text(48, 688, 13, "INVOICE", true);
         Text(390, 790, 10, $"Invoice No: {sale.InvoiceNumber}", true);
         Text(390, 774, 9, $"Order ID: {sale.OrderId}");
         Text(390, 758, 9, $"Date: {sale.PaymentDate.LocalDateTime:dd MMM yyyy, h:mm tt}");
@@ -54,7 +54,7 @@ public sealed class ReceiptPdfService(IOptions<OrganizationOptions> organization
 
         Text(390, 464, 9, "Item total");
         Text(490, 464, 9, Money(sale.Subtotal));
-        Text(390, 442, 9, "VAT (5%)");
+        Text(390, 442, 9, $"VAT ({_organization.VatPercent:0.##}%)");
         Text(490, 442, 9, Money(sale.VatAmount));
         Line(390, 428, 547, 428);
         Text(390, 406, 11, "Total", true);
@@ -63,9 +63,69 @@ public sealed class ReceiptPdfService(IOptions<OrganizationOptions> organization
         if (sale.BookingDate is not null)
             Text(48, 452, 9, $"Booking date: {sale.BookingDate.Value.LocalDateTime:dd MMM yyyy, h:mm tt}");
         Text(48, 342, 10, "Thanks and come again!", true);
-        Text(48, 322, 8, "This payment receipt was generated electronically.");
+        Text(48, 322, 8, "This invoice was generated electronically.");
 
-        return BuildPdf(content.ToString(), logo);
+        return BuildPdf([content.ToString()], logo);
+    }
+
+    public byte[] CreateSalesReport(IReadOnlyList<Sale> sales, DateOnly? from = null, DateOnly? to = null)
+    {
+        const int rowsPerPage = 28;
+        var pages = new List<string>();
+        var pageCount = Math.Max(1, (int)Math.Ceiling(sales.Count / (double)rowsPerPage));
+
+        for (var pageIndex = 0; pageIndex < pageCount; pageIndex++)
+        {
+            var content = new StringBuilder();
+            content.AppendLine("1 g 0 0 595 842 re f 0 g");
+            void Text(double x, double y, double size, string value, bool bold = false) =>
+                content.AppendLine($"BT /{(bold ? "F2" : "F1")} {size.ToString("0.##", CultureInfo.InvariantCulture)} Tf {x.ToString("0.##", CultureInfo.InvariantCulture)} {y.ToString("0.##", CultureInfo.InvariantCulture)} Td ({Escape(value)}) Tj ET");
+            void Line(double x1, double y1, double x2, double y2) =>
+                content.AppendLine($"{x1.ToString(CultureInfo.InvariantCulture)} {y1.ToString(CultureInfo.InvariantCulture)} m {x2.ToString(CultureInfo.InvariantCulture)} {y2.ToString(CultureInfo.InvariantCulture)} l S");
+
+            Text(42, 798, 16, _organization.Name, true);
+            Text(42, 776, 12, "SALES REPORT", true);
+            Text(430, 798, 8, $"Generated: {DateTime.Now:dd MMM yyyy}");
+            Text(480, 776, 8, $"Page {pageIndex + 1} of {pageCount}");
+            var range = from is null && to is null
+                ? "Period: All time"
+                : $"Period: {from?.ToString("dd MMM yyyy") ?? "Beginning"} to {to?.ToString("dd MMM yyyy") ?? "Today"}";
+            Text(42, 758, 8, range);
+            Line(42, 748, 553, 748);
+            Text(42, 730, 8, "Invoice", true);
+            Text(92, 730, 8, "Order", true);
+            Text(188, 730, 8, "Customer", true);
+            Text(340, 730, 8, "Paid", true);
+            Text(415, 730, 8, "Total", true);
+            Text(482, 730, 8, "Email", true);
+            Line(42, 721, 553, 721);
+
+            var pageSales = sales.Skip(pageIndex * rowsPerPage).Take(rowsPerPage).ToArray();
+            var y = 702d;
+            foreach (var sale in pageSales)
+            {
+                Text(42, y, 7.5, Limit(sale.InvoiceNumber, 8));
+                Text(92, y, 7.5, Limit(sale.OrderId, 17));
+                Text(188, y, 7.5, Limit(sale.CustomerName, 27));
+                Text(340, y, 7.5, sale.PaymentDate.LocalDateTime.ToString("dd MMM yyyy"));
+                Text(415, y, 7.5, $"{Money(sale.Total)} {sale.Currency}");
+                Text(482, y, 7.5, Limit(sale.EmailStatus, 12));
+                y -= 22;
+                Line(42, y + 8, 553, y + 8);
+            }
+
+            if (sales.Count == 0) Text(42, 692, 9, "No sales recorded.");
+            if (pageIndex == pageCount - 1)
+            {
+                var total = sales.Sum(sale => sale.Total);
+                Text(390, 70, 10, "Total collected", true);
+                Text(480, 70, 10, $"{Money(total)} {_organization.Currency}", true);
+            }
+            Text(42, 42, 7, "Confidential - FBMA internal use only");
+            pages.Add(content.ToString());
+        }
+
+        return BuildPdf(pages, null);
     }
 
     private byte[]? LoadLogo()
@@ -81,19 +141,28 @@ public sealed class ReceiptPdfService(IOptions<OrganizationOptions> organization
         return File.Exists(path) ? File.ReadAllBytes(path) : null;
     }
 
-    private static byte[] BuildPdf(string pageContent, byte[]? logo)
+    private static byte[] BuildPdf(IReadOnlyList<string> pageContents, byte[]? logo)
     {
         static byte[] Bytes(string value) => Encoding.ASCII.GetBytes(value);
-        var xObject = logo is null ? "" : " /XObject << /Im1 7 0 R >>";
+        var pageCount = pageContents.Count;
+        var firstPageObject = 3;
+        var firstContentObject = firstPageObject + pageCount;
+        var regularFontObject = firstContentObject + pageCount;
+        var boldFontObject = regularFontObject + 1;
+        var imageObjectNumber = boldFontObject + 1;
+        var kids = string.Join(" ", Enumerable.Range(firstPageObject, pageCount).Select(number => $"{number} 0 R"));
         var objects = new List<byte[]>
         {
             Bytes("<< /Type /Catalog /Pages 2 0 R >>"),
-            Bytes("<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
-            Bytes($"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R /F2 6 0 R >>{xObject} >> /Contents 4 0 R >>"),
-            Bytes($"<< /Length {Encoding.ASCII.GetByteCount(pageContent)} >>\nstream\n{pageContent}endstream"),
-            Bytes("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"),
-            Bytes("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>")
+            Bytes($"<< /Type /Pages /Kids [{kids}] /Count {pageCount} >>")
         };
+        var xObject = logo is null ? "" : $" /XObject << /Im1 {imageObjectNumber} 0 R >>";
+        for (var index = 0; index < pageCount; index++)
+            objects.Add(Bytes($"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 {regularFontObject} 0 R /F2 {boldFontObject} 0 R >>{xObject} >> /Contents {firstContentObject + index} 0 R >>"));
+        foreach (var pageContent in pageContents)
+            objects.Add(Bytes($"<< /Length {Encoding.ASCII.GetByteCount(pageContent)} >>\nstream\n{pageContent}endstream"));
+        objects.Add(Bytes("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"));
+        objects.Add(Bytes("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>"));
         if (logo is not null)
         {
             using var imageObject = new MemoryStream();

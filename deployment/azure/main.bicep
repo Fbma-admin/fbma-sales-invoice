@@ -8,6 +8,17 @@ param location string = resourceGroup().location
 @secure()
 param sqlConnectionString string
 
+@description('DNS hostname of the on-premises SQL Server. It must resolve from the Hybrid Connection Manager host. Do not use an IP address or localhost.')
+param onPremSqlHost string
+
+@description('TCP port used by the on-premises SQL Server.')
+param onPremSqlPort int = 1433
+
+@description('Globally unique Azure Relay namespace name.')
+param relayNamespaceName string = '${appName}-relay'
+
+param hybridConnectionName string = 'onprem-sql'
+
 @secure()
 param apiKey string
 
@@ -57,4 +68,49 @@ resource app 'Microsoft.Web/sites@2024-04-01' = {
   }
 }
 
+resource relayNamespace 'Microsoft.Relay/namespaces@2024-01-01' = {
+  name: relayNamespaceName
+  location: location
+  sku: {
+    name: 'Standard'
+    tier: 'Standard'
+  }
+}
+
+resource hybridConnection 'Microsoft.Relay/namespaces/hybridConnections@2024-01-01' = {
+  parent: relayNamespace
+  name: hybridConnectionName
+  properties: {
+    requiresClientAuthorization: true
+    userMetadata: '[{"key":"endpoint","value":"${onPremSqlHost}:${onPremSqlPort}"}]'
+  }
+}
+
+resource hybridConnectionRule 'Microsoft.Relay/namespaces/hybridConnections/authorizationRules@2024-01-01' = {
+  parent: hybridConnection
+  name: 'appservice'
+  properties: {
+    rights: [
+      'Listen'
+      'Send'
+    ]
+  }
+}
+
+resource appHybridConnection 'Microsoft.Web/sites/hybridConnectionNamespaces/relays@2025-03-01' = {
+  name: '${app.name}/${relayNamespace.name}/${hybridConnection.name}'
+  properties: {
+    hostname: onPremSqlHost
+    port: onPremSqlPort
+    relayArmUri: hybridConnection.id
+    relayName: hybridConnection.name
+    sendKeyName: hybridConnectionRule.name
+    sendKeyValue: hybridConnectionRule.listKeys().primaryKey
+    serviceBusNamespace: relayNamespace.name
+    serviceBusSuffix: '.servicebus.windows.net'
+  }
+}
+
 output appUrl string = 'https://${app.properties.defaultHostName}'
+output relayNamespace string = relayNamespace.name
+output hybridConnection string = hybridConnection.name

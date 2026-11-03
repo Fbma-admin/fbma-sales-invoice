@@ -68,7 +68,24 @@ public sealed class SalesDatabase(IConfiguration configuration)
         await command.ExecuteNonQueryAsync();
     }
 
-    public async Task<(Sale Sale, bool Created)> CreateSaleAsync(SaleRequest request, string currency)
+    public async Task<bool> CanConnectAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT 1";
+            await command.ExecuteScalarAsync(cancellationToken);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public async Task<(Sale Sale, bool Created)> CreateSaleAsync(SaleRequest request, string currency, decimal vatPercent)
     {
         await using var connection = await OpenAsync();
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.Serializable);
@@ -91,7 +108,7 @@ public sealed class SalesDatabase(IConfiguration configuration)
         var sequence = Convert.ToInt64(await sequenceCommand.ExecuteScalarAsync(), CultureInfo.InvariantCulture);
         var invoiceNumber = sequence.ToString("D2", CultureInfo.InvariantCulture);
         var subtotal = decimal.Round(request.UnitPrice * request.Quantity, 2, MidpointRounding.AwayFromZero);
-        var vat = decimal.Round(subtotal * 0.05m, 2, MidpointRounding.AwayFromZero);
+        var vat = decimal.Round(subtotal * vatPercent / 100m, 2, MidpointRounding.AwayFromZero);
         var now = DateTimeOffset.UtcNow;
 
         await using var insert = connection.CreateCommand();
@@ -140,13 +157,20 @@ public sealed class SalesDatabase(IConfiguration configuration)
         return await reader.ReadAsync() ? ReadSale(reader) : null;
     }
 
-    public async Task<IReadOnlyList<Sale>> GetSalesAsync(int limit = 250)
+    public async Task<IReadOnlyList<Sale>> GetSalesAsync(int limit = 250, DateOnly? from = null, DateOnly? to = null)
     {
         var result = new List<Sale>();
         await using var connection = await OpenAsync();
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT TOP (@limit) * FROM dbo.Sales ORDER BY Id DESC";
+        command.CommandText = """
+            SELECT TOP (@limit) * FROM dbo.Sales
+            WHERE (@from IS NULL OR CAST(PaymentDate AS date) >= @from)
+              AND (@to IS NULL OR CAST(PaymentDate AS date) <= @to)
+            ORDER BY Id DESC
+            """;
         Add(command, "@limit", SqlDbType.Int, Math.Clamp(limit, 1, 1000));
+        Add(command, "@from", SqlDbType.Date, from is null ? DBNull.Value : from.Value.ToDateTime(TimeOnly.MinValue));
+        Add(command, "@to", SqlDbType.Date, to is null ? DBNull.Value : to.Value.ToDateTime(TimeOnly.MinValue));
         await using var reader = await command.ExecuteReaderAsync();
         while (await reader.ReadAsync()) result.Add(ReadSale(reader));
         return result;
@@ -172,13 +196,20 @@ public sealed class SalesDatabase(IConfiguration configuration)
         return new Cost(id, request.Description.Trim(), request.Category.Trim(), request.Amount, request.CostDate, request.Notes, now);
     }
 
-    public async Task<IReadOnlyList<Cost>> GetCostsAsync(int limit = 250)
+    public async Task<IReadOnlyList<Cost>> GetCostsAsync(int limit = 250, DateOnly? from = null, DateOnly? to = null)
     {
         var result = new List<Cost>();
         await using var connection = await OpenAsync();
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT TOP (@limit) * FROM dbo.Costs ORDER BY CostDate DESC, Id DESC";
+        command.CommandText = """
+            SELECT TOP (@limit) * FROM dbo.Costs
+            WHERE (@from IS NULL OR CostDate >= @from)
+              AND (@to IS NULL OR CostDate <= @to)
+            ORDER BY CostDate DESC, Id DESC
+            """;
         Add(command, "@limit", SqlDbType.Int, Math.Clamp(limit, 1, 1000));
+        Add(command, "@from", SqlDbType.Date, from is null ? DBNull.Value : from.Value.ToDateTime(TimeOnly.MinValue));
+        Add(command, "@to", SqlDbType.Date, to is null ? DBNull.Value : to.Value.ToDateTime(TimeOnly.MinValue));
         await using var reader = await command.ExecuteReaderAsync();
         while (await reader.ReadAsync())
         {

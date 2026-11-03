@@ -1,6 +1,6 @@
 :setvar DatabaseName "FbmaSales"
 :setvar AppLogin "fbma_sales_app"
-:setvar AppPassword "REPLACE_WITH_A_LONG_RANDOM_PASSWORD"
+-- AppPassword must be supplied securely with sqlcmd -v AppPassword="...".
 
 IF DB_ID(N'$(DatabaseName)') IS NULL
 BEGIN

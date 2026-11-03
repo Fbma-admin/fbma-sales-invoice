@@ -1,12 +1,12 @@
 # FBMA Sales Management
 
-.NET 8 Azure App Service application for recording paid FBMA mobile orders, issuing sequential English PDF receipts, emailing the customer and internal recipients, and tracking operating costs in an on-premises Microsoft SQL Server database running on Linux.
+.NET 8 Azure App Service application for recording paid FBMA mobile orders, issuing sequential English PDF invoices, emailing the customer and internal recipients, and tracking operating costs in an on-premises Microsoft SQL Server database running on Linux.
 
 ## Numbering and tax
 
 - `OrderId` is the immutable reference supplied by FBMA Mobile.
-- Receipt invoice numbers are generated independently as `01`, `02`, `03`, etc.
-- VAT is calculated at 5%. The document is intentionally described as a payment receipt and does not contain a TRN.
+- Invoice numbers are generated independently as `01`, `02`, `03`, etc.
+- VAT is calculated at 5%. The document is labelled `INVOICE`, not `TAX INVOICE`, and does not contain a TRN.
 - Reposting the same `OrderId` is safe and returns the original record without issuing another invoice.
 
 ## Configure
@@ -24,17 +24,76 @@ Smtp__Username
 Smtp__Password
 Smtp__SenderEmail
 Organization__Name
+Organization__VatPercent
 Organization__InternalEmails__0
 Organization__InternalEmails__1
 ```
 
 For the current Microsoft 365 mailbox, the host is `smtp.office365.com`, the port is `587`, TLS is enabled, and both the username and sender are `developer@fbma.org.ae`. Supply only `Smtp__Password` from the protected on-premises server environment. Do not commit it to this project.
 
-The supplied FBMA logo is stored at `assets/fbma-logo.jpg` and embedded into generated receipts. The organization name and both internal recipients are already configured.
+The supplied FBMA logo is stored at `assets/fbma-logo.jpg` and embedded into generated invoices. The organization name and both internal recipients are already configured.
+
+## Complete local setup
+
+The repository pins the .NET 8 SDK and includes a local SQL Server container. Keep all passwords outside source control. The automated setup generates strong local-only credentials, starts SQL Server, creates the database and restricted login, configures .NET user-secrets, restores packages, and builds the application:
+
+```bash
+./scripts/setup-local.sh
+./scripts/run-local.sh
+```
+
+Open `http://127.0.0.1:5080/login`. The generated dashboard user ID, password, and API key are stored locally in `.local-credentials`, which is excluded from Git. The dashboard uses a secure sign-in cookie; the API key is reserved for trusted server-to-server calls. Check the complete environment at any time with:
+
+```bash
+./scripts/doctor.sh
+```
+
+### Manual setup
+
+Use these steps only when you do not want the automated setup:
+
+```bash
+cp .env.example .env
+# Edit .env and replace both placeholder passwords.
+docker compose up -d
+```
+
+Wait until `docker compose ps` reports SQL as healthy. Then load the database and restricted application login. Enter the same two passwords stored in your local `.env` when prompted:
+
+```bash
+read -s -p "SQL sa password: " MSSQL_SA_PASSWORD; echo
+read -s -p "FBMA sales app password: " FBMA_SALES_DB_PASSWORD; echo
+docker compose exec -T sql /opt/mssql-tools18/bin/sqlcmd \
+  -S localhost -U sa -P "$MSSQL_SA_PASSWORD" -C \
+  -i /bootstrap/bootstrap.sql \
+  -v AppPassword="$FBMA_SALES_DB_PASSWORD"
+unset MSSQL_SA_PASSWORD FBMA_SALES_DB_PASSWORD
+```
+
+Configure development secrets using .NET user-secrets:
+
+```bash
+dotnet user-secrets set "ConnectionStrings:SalesDatabase" \
+  "Server=127.0.0.1;Database=FbmaSales;User ID=fbma_sales_app;Password=YOUR_APP_PASSWORD;Encrypt=True;TrustServerCertificate=True;Connect Timeout=30"
+dotnet user-secrets set "Security:ApiKey" "YOUR_RANDOM_API_KEY_AT_LEAST_32_CHARACTERS"
+dotnet user-secrets set "Security:AdminUsername" "admin"
+dotnet user-secrets set "Security:AdminPassword" "YOUR_RANDOM_ADMIN_PASSWORD"
+# Add SMTP settings only when you intentionally want local email delivery.
+```
+
+Build and run:
+
+```bash
+dotnet restore
+dotnet build
+dotnet run --urls http://127.0.0.1:5080
+```
+
+Verify `http://127.0.0.1:5080/health`, then open `http://127.0.0.1:5080/login` and sign in with the configured admin credentials. Each sales row has an **Invoice PDF** download, and **Export sales PDF** creates a paginated report of up to the latest 1,000 sales.
 
 ## Database: SQL Server on Linux
 
-Install SQL Server on the on-premises Linux host, then run `deployment/sql-server/bootstrap.sql` with an administrator account. Replace the login password before execution. The application creates its tables on the first successful connection.
+Install SQL Server on the on-premises Linux host, then run `deployment/sql-server/bootstrap.sql` with an administrator account and supply `AppPassword` through `sqlcmd -v`. The application creates its tables on the first successful connection.
 
 The production connection string must be stored in Azure App Service configuration, not in source control:
 
@@ -52,7 +111,23 @@ The hostname in the application connection string must exactly match the Hybrid 
 
 ## Deploy Azure resources
 
-The Bicep template in `deployment/azure/main.bicep` creates a Linux .NET 8 App Service plan and application with HTTPS, health checks, and secure settings parameters. Deploy it from Azure CLI, supplying secrets interactively or through an approved secret pipeline:
+Deploy this application to a dedicated App Service such as `app-fbma-sales`. Do not deploy it to `app-web-01` (website), `app-web-02` (mobile CMS/API), or `app-03` (bowling API).
+
+The Bicep template in `deployment/azure/main.bicep` creates the Linux .NET 8 App Service, an Azure Relay namespace, the SQL Hybrid Connection, HTTPS enforcement, and health checks. The deployment script publishes the application without committing secrets:
+
+```bash
+az login
+az account set --subscription YOUR_SUBSCRIPTION_ID
+cp .deployment.env.example .deployment.env
+chmod 600 .deployment.env
+# Fill .deployment.env with the production resource names, on-premises SQL DNS hostname,
+# encrypted SQL connection string, and SMTP password.
+./scripts/deploy-azure.sh
+```
+
+The SQL hostname must be a DNS name that resolves from the on-premises Hybrid Connection Manager host. It must exactly match both `ONPREM_SQL_HOST` and the server name in `ONPREM_SQL_CONNECTION_STRING`. Do not publish SQL port 1433 to the internet.
+
+The equivalent manual deployment is:
 
 ```bash
 az deployment group create \
@@ -84,6 +159,18 @@ dotnet run --urls http://0.0.0.0:5080
 
 Open `http://server-address:5080/` and sign in with the configured admin credentials.
 
+## GitHub CI/CD
+
+The workflow at `.github/workflows/production.yml` builds pushes and pull requests targeting `main`. A push to `main` deploys the release artifact to the dedicated sales App Service configured by the GitHub repository variable `AZURE_SALES_WEBAPP_NAME`. Configure the following GitHub repository secrets for Azure OIDC:
+
+```text
+AZURE_CLIENT_ID
+AZURE_TENANT_ID
+AZURE_SUBSCRIPTION_ID
+```
+
+The workflow refuses to deploy when the target is one of the existing website, CMS, or bowling App Services.
+
 ## Record a paid sale
 
 Only the server that has verified the payment should call this endpoint:
@@ -109,7 +196,7 @@ curl -X POST http://server-address:5080/api/sales \
 
 ## Record a cost
 
-`POST /api/costs` accepts `description`, `category`, `amount`, `costDate`, and optional `notes`. Use either Basic admin authentication or the API key.
+`POST /api/costs` accepts `description`, `category`, `amount`, `costDate`, and optional `notes`. Use an authenticated dashboard session or the API key.
 
 ## Production notes
 

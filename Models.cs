@@ -57,13 +57,18 @@ public sealed class OrganizationOptions
     public string Name { get; set; } = "Fatima Bint Mubarak Ladies Sports Academy";
     public string LogoPath { get; set; } = "";
     public string Currency { get; set; } = "AED";
+    [Range(typeof(decimal), "0", "100")]
+    public decimal VatPercent { get; set; } = 5m;
     public string[] InternalEmails { get; set; } = [];
 }
 
 public sealed class SecurityOptions
 {
+    [Required, MinLength(32)]
     public string ApiKey { get; set; } = "";
+    [Required]
     public string AdminUsername { get; set; } = "admin";
+    [Required, MinLength(12)]
     public string AdminPassword { get; set; } = "";
 }
 

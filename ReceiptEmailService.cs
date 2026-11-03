@@ -25,8 +25,8 @@ public sealed class ReceiptEmailService(
             using var message = new MailMessage
             {
                 From = new MailAddress(_smtp.SenderEmail),
-                Subject = $"Payment receipt {sale.InvoiceNumber} - {_organization.Name}",
-                Body = $"Hello {WebUtility.HtmlEncode(sale.CustomerName)},<br><br>Your payment was successful. Your receipt is attached.<br><br>Order ID: <strong>{WebUtility.HtmlEncode(sale.OrderId)}</strong><br>Total paid: <strong>{sale.Total:N2} {WebUtility.HtmlEncode(sale.Currency)}</strong><br><br>Thank you.",
+                Subject = $"Invoice {sale.InvoiceNumber} - {_organization.Name}",
+                Body = $"Hello {WebUtility.HtmlEncode(sale.CustomerName)},<br><br>Your payment was successful. Your invoice is attached.<br><br>Order ID: <strong>{WebUtility.HtmlEncode(sale.OrderId)}</strong><br>Total paid: <strong>{sale.Total:N2} {WebUtility.HtmlEncode(sale.Currency)}</strong><br><br>Thank you.",
                 IsBodyHtml = true
             };
             message.To.Add(sale.CustomerEmail);
@@ -40,7 +40,7 @@ public sealed class ReceiptEmailService(
             }
 
             using var attachmentStream = new MemoryStream(pdf);
-            message.Attachments.Add(new Attachment(attachmentStream, $"receipt-{sale.InvoiceNumber}.pdf", "application/pdf"));
+            message.Attachments.Add(new Attachment(attachmentStream, $"invoice-{sale.InvoiceNumber}.pdf", "application/pdf"));
             using var client = new SmtpClient(_smtp.Host, _smtp.Port)
             {
                 EnableSsl = _smtp.EnableSsl,

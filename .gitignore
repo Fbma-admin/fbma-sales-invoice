@@ -2,5 +2,9 @@ bin/
 obj/
 data/
 appsettings.Production.json
+appsettings.Development.json
+.env
+.local-credentials
+.deployment.env
 publish/
 *.zip
