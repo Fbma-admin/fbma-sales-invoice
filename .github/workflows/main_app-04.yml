@@ -82,5 +82,6 @@ jobs:
       - name: Check production health
         run: >-
           curl --fail --silent --show-error
-          --retry 12 --retry-delay 10 --retry-all-errors
+          --connect-timeout 10 --max-time 30
+          --retry 6 --retry-delay 10 --retry-all-errors
           https://app-04-dgddbueabmb7fzf9.northeurope-01.azurewebsites.net/health
