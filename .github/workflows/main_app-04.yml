@@ -55,9 +55,6 @@ jobs:
     if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
-    environment:
-      name: fbma-sales-production
-      url: https://app-04-dgddbueabmb7fzf9.northeurope-01.azurewebsites.net
     permissions:
       contents: read
       id-token: write
