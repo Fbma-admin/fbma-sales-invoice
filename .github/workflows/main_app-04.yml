@@ -1,65 +1,89 @@
-# Docs for the Azure Web Apps Deploy action: https://github.com/Azure/webapps-deploy
-# More GitHub Actions for Azure: https://github.com/Azure/actions
-
-name: Build and deploy ASP.Net Core app to Azure Web App - app-04
+name: FBMA Sales Management - app-04
 
 on:
+  pull_request:
+    branches: [main]
   push:
-    branches:
-      - 'main'
+    branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fbma-sales-app-04-production
+  cancel-in-progress: false
+
+env:
+  DOTNET_VERSION: 8.0.x
+  AZURE_WEBAPP_NAME: app-04
 
 jobs:
   build:
+    name: Build and verify
     runs-on: ubuntu-latest
-    permissions:
-      contents: read #This is required for actions/checkout
-
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out source
+        uses: actions/checkout@v4
 
-      - name: Set up .NET Core
+      - name: Set up .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.x'
+          dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Build with dotnet
-        run: dotnet build --configuration Release
+      - name: Restore
+        run: dotnet restore
 
-      - name: dotnet publish
-        run: dotnet publish -c Release -o ${{env.DOTNET_ROOT}}/myapp
+      - name: Build
+        run: dotnet build --configuration Release --no-restore
 
-      - name: Upload artifact for deployment job
+      - name: Publish
+        if: github.event_name != 'pull_request'
+        run: dotnet publish --configuration Release --no-build --output publish
+
+      - name: Upload deployment artifact
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
-          name: .net-app
-          path: ${{env.DOTNET_ROOT}}/myapp
+          name: fbma-sales-management
+          path: publish
+          if-no-files-found: error
+          retention-days: 7
 
   deploy:
-    runs-on: ubuntu-latest
+    name: Deploy app-04
+    if: github.event_name != 'pull_request'
     needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: fbma-sales-production
+      url: https://app-04-dgddbueabmb7fzf9.northeurope-01.azurewebsites.net
     permissions:
-      id-token: write #This is required for requesting the JWT
-      contents: read #This is required for actions/checkout
-
+      contents: read
+      id-token: write
     steps:
-      - name: Download artifact from build job
+      - name: Download deployment artifact
         uses: actions/download-artifact@v4
         with:
-          name: .net-app
-      
-      - name: Login to Azure
+          name: fbma-sales-management
+          path: publish
+
+      - name: Sign in to Azure with OIDC
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_4788D7A6F5A9468BBBE71EA957C6822E }}
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_E00230CE2B78409094A6EF8E7C1B7938 }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_A0675C23E3164442AE7DF353894FF6C2 }}
 
-      - name: Deploy to Azure Web App
-        id: deploy-to-webapp
+      - name: Deploy to Azure App Service
         uses: azure/webapps-deploy@v3
         with:
-          app-name: 'app-04'
-          slot-name: 'Production'
-          package: .
-          
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          slot-name: Production
+          package: publish
+
+      - name: Check production health
+        run: >-
+          curl --fail --silent --show-error
+          --retry 12 --retry-delay 10 --retry-all-errors
+          https://app-04-dgddbueabmb7fzf9.northeurope-01.azurewebsites.net/health
